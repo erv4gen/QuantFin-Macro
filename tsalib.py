@@ -1,9 +1,9 @@
 import os
-import sys , time , traceback 
+import sys , time , traceback , itertools , warnings , ipdb
 import datetime as dt
 
 from tqdm import tqdm
-import warnings , ipdb
+
 import pandas as pd
 import pandas_datareader.data as web
 import numpy as np
@@ -76,100 +76,97 @@ def get_best_arma(TS):
     return best_aic, best_order, best_mdl
 
 
-def backtest_intraday(lTS=None):
-    windowLength = 1450#252
-    _shif = 0
-    foreLength = len(lTS) - windowLength
-    signal = 0*lTS[-foreLength:]
-    print('Running backtesting ...')
-    time.sleep(1)
-    for d in tqdm(range(foreLength)):
 
-        # create a rolling window by selecting 
-        # values between d+1 and d+T of S&P500 returns
-        
-        TS = lTS[(1+d+_shif):(windowLength+d+_shif)] 
-
-        # Find the best ARIMA fit 
-        # set d = 0 since we've already taken log return of the series
-        res_tup = _get_best_model(TS)
-        order = res_tup[1]
-        model = res_tup[2]
-        #ipdb.set_trace()
-        if order is not None:
-            #now that we have our ARIMA fit, we feed this to GARCH model
-            p_ = order[0]
-            o_ = order[1]
-            q_ = order[2]
-
-            am = arch_model(model.resid, p=p_, o=o_, q=q_, dist='StudentsT')
-            res = am.fit(update_freq=5, disp='off')
-
-            # Generate a forecast of next day return using our fitted model
-            out = res.forecast(horizon=1, start=None, align='origin')
-
-            #Set trading signal equal to the sign of forecasted return
-            # Buy if we expect positive returns, sell if negative
-
-            signal.iloc[d] = np.sign(out.mean['h.1'].iloc[-1])
-        else:
-            signal.iloc[d] = np.nan
-    return signal
-
-
-def backtest_volamodel(lTS=None,windowLength = 500):
-    foreLength = len(lTS) - windowLength
-    print('Running backtesting ...')
-    time.sleep(1)
-    try:
-        for d in tqdm(range(foreLength)):
-
-            # create a rolling window by selecting 
-            # values between d+1 and d+T of S&P500 returns
-            
-            TS = lTS[(1+d):(windowLength+d)].copy()
-            for i in range(30):
-                # Find the best ARIMA fit 
-                # set d = 0 since we've already taken log return of the series
-                res_tup = _get_best_model(TS)
-                order = res_tup[1]
-                model = res_tup[2]
-
-                if order is not None:
-                    #now that we have our ARIMA fit, we feed this to GARCH model
-                    p_ = order[0]
-                    o_ = order[1]
-                    q_ = order[2]
-                    res = (arch_model(model.resid, p=p_, o=o_, q=q_, dist='StudentsT')
-                            .fit(update_freq=5, disp='off')
-                          )
-
-                    #running MonteCarlo simulations
-
-                    ipdb.set_trace()
-                    # Generate a forecast of next day return using our fitted model
-                    out = (res.forecast(horizon=1, start=None, align='origin')
-                           .mean['h.1']
-                          .iloc[-1]
-                          )
-                    TS = TS.append(out)
-
-                    #Set trading signal equal to the sign of forecasted return
-                    # Buy if we expect positive returns, sell if negative
-
-    except:
-        print(traceback.print_exc())
-    return signal
 
 
 def variance_quantiles(sim_paths,prc=0.75):
+    
     sims_vars = []
     for i in range(len(sim_paths)):
         sims_vars.append(np.var(sim_paths[i]))
-    qa = np.quantile(sims_vars,q=[0.25,0.5,prc])
+    
+    qa = np.quantile(sims_vars,q=[0.25,prc,0.95])
     sims_vars_np = np.array(sims_vars)
-    return sim_paths[sims_vars.index((sims_vars_np[sims_vars_np > qa[2]][0]))]
+    return sim_paths[sims_vars.index( np.sort(sims_vars_np[(sims_vars_np > qa[1]) & (sims_vars_np < qa[2]) ])[0] )]
+
+def find_arch(TS,model,true_variance_forecast,horizon,print_model):
+
+    
+    aic_d = []
+    RMSE = []
+    params_factor  = {'p':list(range(1,5)), 'o':list(range(1,5))}
+    params_factor_list = [item for key, item  in params_factor.items()]
+    params_factor_grid = list(itertools.product(*params_factor_list))
+    print(f'Solving best {model} model ...')
+    time.sleep(1)
+    for param in tqdm(params_factor_grid):
+        p_ = param[0]
+        q_ = param[1]
+        o_ = 0
+        #test each parameter on three different month
+        eval_aic = []
+        eval_rmse = []
+        for step in range(88,0,-22):
+            res = (arch_model(TS[:-step], p=p_, o=o_, q=q_, dist='StudentsT',vol='GARCH')
+                                .fit(update_freq=5, disp='off')
+                              )
+            forecast  = (res.forecast(horizon=horizon, start=None, align='origin', method='simulation')
+                    )
+            expected_variance =  forecast.variance.iloc[-1].values
+            eval_aic.append(res.aic)
+            #ipdb.set_trace()
+            if step == 22:
+                eval_rmse.append( np.sqrt(np.mean(np.power(expected_variance - true_variance_forecast[-step:],2) )) )
+            else:
+                eval_rmse.append( np.sqrt(np.mean(np.power(expected_variance - true_variance_forecast[-step:(step*(-1)+horizon)],2) )) )
+       
+        aic_d.append(np.product(np.log(eval_aic) ) )
+        RMSE.append(np.product(eval_rmse))
+    combo_param = [a*b*1e3 for a,b in zip(aic_d ,RMSE)]
+    best_params= params_factor_grid[(combo_param.index(min(combo_param)))]
+    
+    if print_model:
+        fig, ax = plt.subplots(1,1)
+        title = plt.title('AIC Estimation')
+        lines = ax.plot(aic_d[1:],label='AIC',color='#a82828')
+        #lines[0].set_label('AIC')
+
+        ax2 = ax.twinx()
+        lines2 = ax2.plot(RMSE,label='RMSE',color='#6d9686')
+        #lines2[0].set_label('RMSE')
+
+        legend = ax.legend()
+        legend2 = ax2.legend()
+    
+    
+    print('best parameters: ',best_params, 'At index:',params_factor_grid.index(best_params))
+    return params_factor_grid , best_params
+
+def vola_estimation(data,horizon,model,print_model,sim_prc):
+    TS = 100* data['Adj Close'].pct_change().dropna()
+    #TS = rets[:-horizon]
+    #predict_date = 
+    params_factor_grid , best_params = find_arch(TS=TS[:-horizon]
+                                                 ,model=model
+                                                 ,true_variance_forecast=data.vola.values#[-horizon:].values
+                                                 ,horizon=horizon
+                                                 ,print_model=print_model)
+    
+    res_final = (arch_model(TS, p=best_params[0], o=0, q=best_params[1], dist='StudentsT',vol=model)
+                                .fit(update_freq=5, disp='off')
+            )
 
 
+    forecast  = (res_final.forecast(horizon=horizon, start=None, align='origin', method='simulation')
+            )
+    
+    sims = forecast.simulations
 
+    simulated_path = sims.residual_variances[-1,:] #/100
+    expected_variance =  forecast.variance.iloc[-1].values #/100                              
 
+    most_var_sim_ts = variance_quantiles(simulated_path,prc=sim_prc)
+    
+    month_expect_var = np.sum([np.power(x-most_var_sim_ts.mean(),2) for x in most_var_sim_ts]) *100/ data.iloc[-horizon,1]
+    
+    return {'expected_var':month_expect_var,'expected_var_ts':most_var_sim_ts}
