@@ -233,12 +233,24 @@ def build_model(data,horizon,model,print_model,sim_prc,method,arch_params,mean_m
     return {'expected_var':month_expect_var,'expected_var_d':month_expect_var_d#, 'values':expected_mean
            }
 
-def eval_model(TS,sim_prc,print_model,model,horizon,method,arch_params,mean_model,dist,ticker):
-    prev_month_vola =  np.sqrt( np.sum(
-            [np.power(x-TS.rets[-(horizon*2):-horizon].values.mean(),2) for x in TS.rets[-(2*horizon):-horizon].values]
+def eval_model(TS,sim_prc,print_model,model,horizon,method,arch_params,mean_model,dist,ticker,live):
+    if live:
+        start = horizon  
+        end = 1
+        real_vola = 0
+    else:
+        start = horizon  * 2
+        end = horizon
+        real_vola =  np.sqrt( np.sum(
+            [np.power(x-TS.rets[-horizon:].values.mean(),2) for x in TS.rets[-horizon:].values]
                                                             ) )
+        
+    prev_month_vola =  np.sqrt( np.sum(
+            [np.power(x-TS.rets[-(start):-end].values.mean(),2)
+             for x in TS.rets[-(start):-end].values]
+                                 ) )
 
-    var_sim = build_model(data=TS.iloc[:-horizon]
+    var_sim = build_model(data=TS.iloc[:-end]
                                      ,horizon=horizon
                                      ,model=model
                                      ,print_model=print_model
@@ -248,9 +260,11 @@ def eval_model(TS,sim_prc,print_model,model,horizon,method,arch_params,mean_mode
                                      ,arch_params=arch_params
                                      ,mean_model=mean_model) 
 
-    real_vola =  np.sqrt( np.sum(
-            [np.power(x-TS.rets[-horizon:].values.mean(),2) for x in TS.rets[-horizon:].values]
-                                                            ) )
+    if live:
+        sim = np.random.normal(loc=TS.iloc[-end,2],scale =var_sim['expected_var_d'],size=int(1e5))
+        quant = np.quantile(sim,q=[0.25,0.5,0.75,0.95])
+    else:
+        quant = [0]
     return {'model': 
                     {
                         'sim_id': str(uuid.uuid4())
@@ -266,6 +280,7 @@ def eval_model(TS,sim_prc,print_model,model,horizon,method,arch_params,mean_mode
                        # , 'expected_var':round(var_sim['expected_var'],2)
                     , 'expected_var_d':round(var_sim['expected_var_d'],2)
                        ,'real_vola':round(real_vola,2)
+                        ,'predicted_range': quant
                     }
             ,'stats':
                     {'null_rmse' : round( np.abs(prev_month_vola- real_vola) / prev_month_vola
