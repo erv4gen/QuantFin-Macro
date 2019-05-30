@@ -31,13 +31,15 @@ def _fit_poly(tresdf):
         except:
             z = np.repeat(None,4)
             px = np.repeat(None,100)
-        curve_data[tresdf.index[i].strftime('%Y-%m-%d')] = px
+        #curve_data[tresdf.index[i].strftime('%Y-%m-%d')] = px
+        curve_data[tresdf.index[i]] = px
         curve_params = curve_params.append(pd.Series(z,index=['pow3','pow2','pow1','c'],name=tresdf.index[i])
                                               # ,ignore_index=True
                                               )
     curve_params.index = pd.to_datetime(curve_params.index)
     curve_params = curve_params.dropna()
     curve_data = curve_data.dropna(axis=1)
+    curve_data.columns = [x.split('T')[0] for x in curve_data.columns]
     return curve_params , curve_data
 
 def plot_multi(data, cols=None,title='', spacing=.1,loc='upper center', **kwargs):
