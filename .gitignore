@@ -2,3 +2,4 @@ nogit
 .ipynb_checkpoints
 __pycache__/tsalib.cpython-37.pyc
 *.pyc
+*.pyc
